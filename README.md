@@ -15,7 +15,9 @@ selecting \(\lambda_1,\lambda_2\) by cross-validation, and comparing estimated c
 | [`model/`](model/) | Solver, preprocessing, cross-validation, evaluation, plotting, notebooks, tests, and run configuration |
 | [`model/simulation_experiments.ipynb`](model/simulation_experiments.ipynb) | Define true beta blocks, run simulations and CV, fit a final model, and save each experiment |
 | [`model/plot_saved_simulation.ipynb`](model/plot_saved_simulation.ipynb) | Load a saved experiment and reproduce plots without refitting |
+| [`model/real_y_experiment.ipynb`](model/real_y_experiment.ipynb) | Fit the observed outcome in `y.npy`, select penalties by CV, and save real-outcome diagnostics |
 | [`simulation output/`](simulation%20output/) | Three published true-versus-estimated beta overlays |
+| [`real data output/`](real%20data%20output/) | Published diagnostics from the observed `y.npy` run |
 
 ## Requirements
 
@@ -94,6 +96,12 @@ to load the latest run, or choose one of the printed indices. Run all cells to g
 
 This plotting notebook loads saved files; it does not rerun fitting.
 
+## Fit an observed outcome
+
+Open [`model/real_y_experiment.ipynb`](model/real_y_experiment.ipynb) to fit the observed outcome in `y.npy` rather than a simulated outcome. Change `Y_FILE` in its configuration cell to fit another outcome file such as `age.npy`.
+
+The notebook uses the same cross-validation and convergence checks, selects the final pair by mean validation MSE unless an explicit pair is supplied, refits using all available subjects, and saves each run below `model/results/real_y_<name>_<timestamp>/`.
+
 ## Published beta overlays
 
 The three figures in [`simulation output/`](simulation%20output/) use the fixed `original_blocks` true beta structure. Their final full-data fits used lambda pairs selected from cross-validation:
@@ -105,6 +113,10 @@ The three figures in [`simulation output/`](simulation%20output/) use the fixed 
 | [`original_blocks_lambda1_20_lambda2_20.png`](simulation%20output/original_blocks_lambda1_20_lambda2_20.png) | `(20, 20)` |
 
 The overlays are based on final fits using all simulation subjects after cross-validation selected the penalties. Estimated beta signs are aligned only for display because \(\beta\) and \(-\beta\) produce the same quadratic prediction.
+
+## Published observed-outcome diagnostics
+
+[`real data output/`](real%20data%20output/) contains four figures from the completed observed `y.npy` experiment using 514 subjects. It evaluated the 25 configured lambda pairs with five-fold CV and selected final \((\lambda_1,\lambda_2)=(5,5)\) by minimum mean validation MSE. The folder includes a validation-R² heatmap, fold-level validation R² plot, final beta/prediction/residual diagnostics, and optimizer objective/stationarity diagnostics.
 
 ## Verification
 
