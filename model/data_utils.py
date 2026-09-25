@@ -1,7 +1,6 @@
 import os
 
 import numpy as np
-import jax.numpy as jnp
 
 
 # ============================================================
@@ -15,9 +14,35 @@ def load_connectivity_array(
 
     arr = np.load(file_path).reshape((-1, p, p))
 
-    X = jnp.array(np.transpose(arr, (1, 2, 0)))
-    
-    return jnp.asarray(X)
+    # Preserve disk precision even when loaded before the solver/JAX config.
+    X = np.asarray(np.transpose(arr, (1, 2, 0)), dtype=np.float64)
+    if not np.all(np.isfinite(X)):
+        raise ValueError(f"Connectivity contains nonfinite values: {file_path}")
+    return X
+
+
+def preprocess_X2(X2):
+    """Log10-transform, normalize by the log10-diagonal, then zero the diagonal.
+
+    X2 has shape (p, p, n). Entries with a zero normalization denominator
+    are set to zero to avoid division by zero.
+    """
+    X2 = np.asarray(X2, dtype=np.float64)
+    if X2.ndim != 3 or X2.shape[0] != X2.shape[1]:
+        raise ValueError("X2 must have shape (p, p, n).")
+    if not np.all(np.isfinite(X2)) or np.any(X2 <= -1):
+        raise ValueError("X2 must be finite and greater than -1 before log10(1 + X2).")
+    if np.any(np.diagonal(X2, axis1=0, axis2=1) < 0):
+        raise ValueError("X2 diagonal must be nonnegative for square-root normalization.")
+    X2 = np.log10(1 + X2)
+    sqrt_diag = np.sqrt(np.diagonal(X2, axis1=0, axis2=1).T)
+    denominator = sqrt_diag[:, None, :] * sqrt_diag[None, :, :]
+    X2 = np.divide(
+        X2, denominator, out=np.zeros_like(X2), where=denominator != 0
+    )
+    idx = np.arange(X2.shape[0])
+    X2[idx, idx, :] = 0.0
+    return X2
 
 
 # ============================================================
@@ -33,7 +58,9 @@ def generate_simulation_data(
     snr=1.0,
     rs_file="z_rs_raw_ea.npy",
     emo_file="z_emo_raw_ea.npy",
-    seed=2026
+    seed=2026,
+    beta1_true=None,
+    beta2_true=None,
 ):
     """
     Semi-synthetic simulation using real connectivity matrices.
@@ -41,11 +68,15 @@ def generate_simulation_data(
     Parameters
     ----------
     sparsity1 : float
-        Sparsity for beta1_true (proportion of non-zero ROIs).
+        Retained for call compatibility. The fixed ROI blocks below determine
+        the current simulation support; this value does not change them.
     sparsity2 : float, optional
-        Sparsity for beta2_true. If None, defaults to sparsity1.
+        Also retained for compatibility with the fixed-block experiment.
+    beta1_true, beta2_true : array-like, optional
+        Supply both to define another simulation. If omitted, the original
+        fixed ROI blocks are used. Custom arrays are copied, not modified.
     """
-    
+
     # Fallback if sparsity2 isn't explicitly passed
     if sparsity2 is None:
         sparsity2 = sparsity1
@@ -56,18 +87,7 @@ def generate_simulation_data(
     X1 = load_connectivity_array(os.path.join(data_dir, rs_file), p)
     X2 = load_connectivity_array(os.path.join(data_dir, emo_file), p)
 
-    X2 = np.log10(1 + X2)
-    diag = np.diagonal(X2, axis1=0, axis2=1).T
-    sqrt_diag = np.sqrt(diag)
-
-    denominator = sqrt_diag[:, None, :] * sqrt_diag[None, :, :]
-    threshold = 1e-3
-    valid_mask = denominator > threshold
-
-    X2 = np.where(valid_mask, X2 / np.where(valid_mask, denominator, 1.0), 0.0)
-
-    for i in range(X2.shape[2]):
-        np.fill_diagonal(X2[:, :, i], 0)
+    X2 = preprocess_X2(X2)
 
     available_n = min(X1.shape[2], X2.shape[2])
     if n is None:
@@ -79,39 +99,30 @@ def generate_simulation_data(
     X2 = X2[:, :, :n]
 
     # --- Centering ---
-    X1_mean = jnp.mean(X1, axis=2, keepdims=True)
-    X2_mean = jnp.mean(X2, axis=2, keepdims=True)
+    X1_mean = np.mean(X1, axis=2, keepdims=True)
+    X2_mean = np.mean(X2, axis=2, keepdims=True)
 
     X1_centered = X1 - X1_mean
     X2_centered = X2 - X2_mean
 
-    # --- Sparse Ground Truth Generation ---
-    beta1_true = np.zeros((p, 1))
-    beta2_true = np.zeros((p, 1))
-
-    # # Calculate independent number of non-zero entries
-    # n_nonzero1 = max(1, int(round(p * sparsity1)))
-    # n_nonzero2 = max(1, int(round(p * sparsity2)))
-
-    # # ROI variability / strength
-    # strength1 = np.sum(np.abs(np.asarray(X1_centered)), axis=(1, 2))
-    # strength2 = np.sum(np.abs(np.asarray(X2_centered)), axis=(1, 2))
-
-    # # Select top ROIs independently according to their respective sparsity
-    # idx1 = np.argsort(strength1)[-n_nonzero1:]
-    # idx2 = np.argsort(strength2)[-n_nonzero2:]
-
-    # signs1 = rng.choice([-1, 1], size=(n_nonzero1, 1))
-    # signs2 = rng.choice([-1, 1], size=(n_nonzero2, 1))
-
-    # beta1_true[idx1] = rng.uniform(0.5, 2.0, size=(n_nonzero1, 1)) * signs1
-    # beta2_true[idx2] = rng.uniform(0.5, 2.0, size=(n_nonzero2, 1)) * signs2
-
-    beta1_true[40:60] = 1.5
-    beta1_true[120:150] = -1.0
-
-    beta2_true[40:60] = 1
-    beta2_true[120:150] = -1.2
+    # Preserve the original fixed blocks unless both custom vectors are supplied.
+    if (beta1_true is None) != (beta2_true is None):
+        raise ValueError("Supply both beta1_true and beta2_true, or neither.")
+    if beta1_true is None:
+        beta1_true = np.zeros((p, 1))
+        beta2_true = np.zeros((p, 1))
+        beta1_true[40:60] = 1.5
+        beta1_true[120:150] = -1.0
+        beta2_true[40:60] = 1.0
+        beta2_true[120:150] = -1.2
+    else:
+        betas = []
+        for name, beta in (("beta1_true", beta1_true), ("beta2_true", beta2_true)):
+            beta = np.asarray(beta, dtype=np.float64)
+            if beta.size != p or not np.all(np.isfinite(beta)):
+                raise ValueError(f"{name} must contain {p} finite coefficients.")
+            betas.append(beta.reshape(p, 1).copy())
+        beta1_true, beta2_true = betas
 
     # --- Generate Signal & Noise ---
     def get_signal(X, beta):
@@ -128,9 +139,9 @@ def generate_simulation_data(
     y = signal + noise
 
     return (
-        jnp.asarray(X1),
-        jnp.asarray(X2),
-        jnp.asarray(y),
+        np.asarray(X1, dtype=np.float64),
+        np.asarray(X2, dtype=np.float64),
+        np.asarray(y, dtype=np.float64),
         beta1_true,
         beta2_true
     )
@@ -166,9 +177,7 @@ def load_fmri_data(
         p
     )
 
-    X2 = np.log10(1 + X2)
-    for i in range(X2.shape[2]):
-        np.fill_diagonal(X2[:, :, i], 0)
+    X2 = preprocess_X2(X2)
 
 
     y = np.load(
@@ -176,14 +185,14 @@ def load_fmri_data(
             data_dir,
             y_file
         )
-    ).squeeze()
+    ).reshape(-1)
 
     age = np.load(
         os.path.join(
             data_dir,
             age_file
         )
-    ).squeeze()
+    ).reshape(-1)
 
     n = min(
         X1.shape[2],
@@ -214,8 +223,8 @@ def load_fmri_data(
     )
 
     return (
-        jnp.asarray(X1),
-        jnp.asarray(X2),
-        jnp.asarray(y),
-        jnp.asarray(age)
+        np.asarray(X1, dtype=np.float64),
+        np.asarray(X2, dtype=np.float64),
+        np.asarray(y, dtype=np.float64),
+        np.asarray(age, dtype=np.float64)
     )

@@ -4,7 +4,7 @@ import jax.numpy as jnp
 
 from itertools import product
 from sklearn.model_selection import KFold
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 
 from bilinear_lasso import bilinear_lasso
 
@@ -12,11 +12,12 @@ from config import (
     MAX_ITER,
     STEP_SIZE,
     TOL,
-    P,
     N_SPLITS,
     N_JOBS,
     LAMBDA1_GRID,
-    LAMBDA2_GRID
+    LAMBDA2_GRID,
+    NUM_CANDIDATES,
+    INITIALIZATION,
 )
 
 from evaluation import (
@@ -43,7 +44,10 @@ def run_one_cv_fold(
     step_size,
     tol,
     support_threshold=1e-6,
-    optimizer_seed=2026
+    optimizer_seed=2026,
+    num_candidates=NUM_CANDIDATES,
+    initialization=INITIALIZATION,
+    require_convergence=True,
 ):
     """
     Run one train/validation fold for a fixed pair
@@ -83,13 +87,13 @@ def run_one_cv_fold(
     # 3. Center X using TRAINING means only
     # ========================================================
 
-    X1_mean = jnp.mean(
+    X1_mean = np.mean(
         X1_tr,
         axis=2,
         keepdims=True
     )
 
-    X2_mean = jnp.mean(
+    X2_mean = np.mean(
         X2_tr,
         axis=2,
         keepdims=True
@@ -120,12 +124,14 @@ def run_one_cv_fold(
     )
 
     model.fit(
-        num_candidates=1,
+        num_candidates=num_candidates,
         max_iter=max_iter,
         step_size=step_size,
         tol=tol,
         disturbance=2,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        initialization=initialization,
+        require_convergence=require_convergence,
     )
 
 
@@ -212,6 +218,21 @@ def run_one_cv_fold(
     # ========================================================
 
     return {
+        "train_idx": np.asarray(train_idx),
+        "val_idx": np.asarray(val_idx),
+        "y_train_mean": float(y_mean),
+        "converged": model.converged_,
+        "stationarity": model.stationarity_,
+        "iterations": model.candidate_status[model.sel_idx]["iterations"],
+        "selected_candidate": model.sel_idx,
+        "candidate_status": model.candidate_status,
+        "model_history": {
+            "loss_history": model.loss_history,
+            "stationarity_history": model.stationarity_history,
+            "trajectory": model.trajectory,
+        },
+        "objective": model.l,
+        "dtype": str(model.beta1.dtype),
 
         "lambda1":
             float(lam1),
@@ -294,14 +315,21 @@ def run_one_lambda_pair_cv(
     X1,
     X2,
     y,
-    seed=1999
+    seed=1999,
+    n_splits=N_SPLITS,
+    max_iter=MAX_ITER,
+    step_size=STEP_SIZE,
+    tol=TOL,
+    num_candidates=NUM_CANDIDATES,
+    initialization=INITIALIZATION,
+    require_convergence=True,
 ):
     """
     Run K-fold CV for one lambda pair.
     """
 
     kf = KFold(
-        n_splits=N_SPLITS,
+        n_splits=n_splits,
         shuffle=True,
         random_state=seed
     )
@@ -317,24 +345,33 @@ def run_one_lambda_pair_cv(
         )
     ):
 
-        fold_result = run_one_cv_fold(
-            X1=X1,
-            X2=X2,
-            y=y,
-            train_idx=train_idx,
-            val_idx=val_idx,
-            lam1=lam1,
-            lam2=lam2,
-            p=P,
-            max_iter=MAX_ITER,
-            step_size=STEP_SIZE,
-            tol=TOL,
-            optimizer_seed=(
-                seed
-                +
-                fold_id
+        try:
+            fold_result = run_one_cv_fold(
+                X1=X1,
+                X2=X2,
+                y=y,
+                train_idx=train_idx,
+                val_idx=val_idx,
+                lam1=lam1,
+                lam2=lam2,
+                p=X1.shape[0],
+                max_iter=max_iter,
+                step_size=step_size,
+                tol=tol,
+                num_candidates=num_candidates,
+                initialization=initialization,
+                require_convergence=require_convergence,
+                optimizer_seed=(
+                    seed
+                    +
+                    fold_id
+                )
             )
-        )
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"CV fold {fold_id + 1}/{n_splits}, lambda=({lam1}, {lam2}): {error}"
+            ) from error
+
 
         folds.append(
             fold_result
@@ -362,6 +399,9 @@ def run_one_lambda_pair_cv(
 
 
     return {
+        "all_converged": all(f["converged"] for f in folds),
+        "max_stationarity": max(f["stationarity"] for f in folds),
+        "mean_iterations": float(np.mean([f["iterations"] for f in folds])),
 
         "lambda1":
             float(lam1),
@@ -473,7 +513,15 @@ def run_cv_over_lambdas(
     y,
     seed=1999,
     lambda1_grid=None,
-    lambda2_grid=None
+    lambda2_grid=None,
+    n_jobs=N_JOBS,
+    n_splits=N_SPLITS,
+    max_iter=MAX_ITER,
+    step_size=STEP_SIZE,
+    tol=TOL,
+    num_candidates=NUM_CANDIDATES,
+    initialization=INITIALIZATION,
+    require_convergence=True,
 ):
     """
     Run CV across all combinations of lambda1 and lambda2.
@@ -485,6 +533,14 @@ def run_cv_over_lambdas(
 
     gives 3 x 3 = 9 lambda pairs.
     """
+
+    X1, X2 = np.asarray(X1, dtype=np.float64), np.asarray(X2, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64).ravel()
+    if (X1.ndim != 3 or X1.shape[0] != X1.shape[1]
+            or X2.shape != X1.shape or X1.shape[2] != len(y)):
+        raise ValueError("X1/X2 must have shape (p, p, n), and y must have length n.")
+    if not all(np.all(np.isfinite(a)) for a in (X1, X2, y)):
+        raise ValueError("CV inputs must be finite.")
 
     # ========================================================
     # Use defaults from config
@@ -528,26 +584,17 @@ def run_cv_over_lambdas(
     # Run lambda pairs in parallel
     # ========================================================
 
-    results = Parallel(
-        n_jobs=N_JOBS
-    )(
-        delayed(
-            run_one_lambda_pair_cv
-        )(
-            lam1=lam1,
-            lam2=lam2,
-            X1=X1,
-            X2=X2,
-            y=y,
-            seed=seed
+    # Prevent each process from also using a full set of BLAS threads.
+    with parallel_config(backend="loky", inner_max_num_threads=1):
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(run_one_lambda_pair_cv)(
+                lam1=lam1, lam2=lam2, X1=X1, X2=X2, y=y, seed=seed,
+                n_splits=n_splits, max_iter=max_iter, step_size=step_size,
+                tol=tol, num_candidates=num_candidates, initialization=initialization,
+                require_convergence=require_convergence,
+            )
+            for lam1, lam2 in lambda_pairs
         )
-
-        for (
-            lam1,
-            lam2
-        )
-        in lambda_pairs
-    )
 
 
     # ========================================================
@@ -557,6 +604,9 @@ def run_cv_over_lambdas(
     summary_df = pd.DataFrame(
         [
             {
+                "All Converged": r["all_converged"],
+                "Max Stationarity": r["max_stationarity"],
+                "Mean Iterations": r["mean_iterations"],
 
                 "lambda1":
                     r["lambda1"],

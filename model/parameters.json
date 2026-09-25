@@ -1,11 +1,18 @@
 [
     {
         "LAMBDA1_GRID": [
-            1,2,4,6
+            1,
+            5,
+            10,
+            20,
+            50
         ],
-
         "LAMBDA2_GRID": [
-            1,2,4,6
+            1,
+            5,
+            10,
+            20,
+            50
         ],
         "P": 200,
         "N_SUBJECTS": 514,
@@ -13,10 +20,12 @@
         "SPARSITY2": 0.4,
         "SNR": 2,
         "N_SPLITS": 5,
-        "N_JOBS": 5,
+        "N_JOBS": 2,
         "MAX_ITER": 6000,
-        "STEP_SIZE": 1e-6,
-        "TOL": 1e-5,
-        "DATA_DIR": "/Users/xue6bq/Desktop/Aiying/Data"
+        "STEP_SIZE": 1e-06,
+        "TOL": 1e-05,
+        "DATA_DIR": "/Users/xue6bq/Desktop/Aiying/Data",
+        "NUM_CANDIDATES": 2,
+        "INITIALIZATION": "scaled_random"
     }
 ]
