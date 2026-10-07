@@ -23,7 +23,7 @@
         "N_JOBS": 2,
         "MAX_ITER": 6000,
         "STEP_SIZE": 1e-06,
-        "TOL": 1e-05,
+        "TOL": 3e-05,
         "DATA_DIR": "/Users/xue6bq/Desktop/Aiying/Data",
         "NUM_CANDIDATES": 2,
         "INITIALIZATION": "scaled_random"

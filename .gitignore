@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.DS_Store
+
+# Generated model runs may contain large arrays and are retained locally.
+model/results/*
+!model/results/README.md
+!model/results/published_figures/
+!model/results/published_figures/**

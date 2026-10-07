@@ -1,11 +1,11 @@
-# Bilinear simulation model
+# Model workflow
 
-Run `simulation_experiments.ipynb` to define true beta blocks, run cross-validation, and save each experiment under `model/results/`. Run `plot_saved_simulation.ipynb` to load a completed experiment and reproduce diagnostics without refitting.
+Use only these notebooks:
 
-The notebooks require the connectivity files specified by `DATA_DIR` in `parameters.json`. Update that path before running on another computer.
+- `simulation_experiments.ipynb` — create and fit simulated experiments.
+- `plot_saved_simulation.ipynb` — plot a completed simulation run.
+- `real_y_experiment.ipynb` — fit an observed outcome.
 
-Run all verification checks from the repository root with:
+The shared modules in this folder provide fitting, data loading, cross-validation, result saving, and plotting. Set the data location in `parameters.json` before running a notebook.
 
-```sh
-.venv/bin/python -m unittest discover -s model -p 'test_*.py'
-```
+Generated output is saved locally in `results/`. Each experiment receives a separate subfolder.
